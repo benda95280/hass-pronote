@@ -23,28 +23,62 @@ Click on the following button:
 Or go to :  
 Settings > Devices & Sevices > Integrations > Add Integration, and search for "Pronote"
 
-Then follow the step of the config flow:  
-![Pronote config flow](doc/config_flow.png)
+You can choose between two options when adding a config entry.  
 
-Note: if you're using a Parent account, you'll be prompt to select a child:  
-![Pronote config flow](doc/config_flow_parent.png)
+### Option 1: using username and password
+
+Use your Pronote URL with username, password and ENT (optional):  
+![Pronote config flow](doc/config_flow_username_password.png)
+
+### Option 2: using the QR Code
+
+Install the following Chrome Extension: [QR Code Reader](https://chrome.google.com/webstore/detail/qr-code-reader/likadllkkidlligfcdhfnnbkjigdkmci) (only needed for setup).  
+
+Create the QR Code from your Pronote account:  
+![image](doc/generate_qr_code.png)
+
+Use the extension to scan the QR Code:  
+![image](doc/scan_qr_code.png)
+
+And copy the JSON ouput that looks like:
+```json
+{"jeton":"XXXXXXXXXXX[...]XXXXXXXXXXXXXX","login":"YYYYYYYYYYYYYY","url":"https://[id of your school].index-education.net/pronote/..."}
+```
+
+Paste it, and enter the PIN code used for the generation:  
+![image](doc/config_flow_qr_code.png)
+
+### Parent account
+
+If using a Parent account, you'll have to select the child you want to add:  
+![image](doc/config_flow_parent.png)
 
 ## Usage
 
-This integration provides several sensors (where `LASTNAME` and `FIRSTNAME` are replaced):
-* `sensor.pronote_LASTNAME_FIRSTNAME`: basic informations about your child
-* `sensor.pronote_LASTNAME_FIRSTNAME_timetable_today`: today's timetable
-* `sensor.pronote_LASTNAME_FIRSTNAME_timetable_tomorrow`: tomorrow's timetable
-* `sensor.pronote_LASTNAME_FIRSTNAME_timetable_next_day`: next school day timetable
-* `sensor.pronote_LASTNAME_FIRSTNAME_timetable_period`: next school day timetable for next 15 days
-* `sensor.pronote_LASTNAME_FIRSTNAME_timetable_ical_url`: iCal URL for the timetable
-* `sensor.pronote_LASTNAME_FIRSTNAME_grades`: a list of the latest grades
-* `sensor.pronote_LASTNAME_FIRSTNAME_homework`: a list of your child's homework
-* `sensor.pronote_LASTNAME_FIRSTNAME_homework_period`: a list of your child's homework for max 15 days
-* `sensor.pronote_LASTNAME_FIRSTNAME_absences`: a list of your child's absences
-* `sensor.pronote_LASTNAME_FIRSTNAME_evaluations` a list of your child's evaluations
-* `sensor.pronote_LASTNAME_FIRSTNAME_averages` a list of your child's averages
-* `sensor.pronote_LASTNAME_FIRSTNAME_punishments` a list of your child's punishments
-* `sensor.pronote_LASTNAME_FIRSTNAME_menus` a list of your child's menus
+This integration provides several sensors, always prefixed with `pronote_LASTNAME_FIRSTNAME` (where `LASTNAME` and `FIRSTNAME` are replaced), for example `sensor.pronote_LASTNAME_FIRSTNAME_timetable_today`.
 
-The sensors above are updated every 15 minutes.
+
+| Sensor | Description |
+|--------|-------------|
+| `sensor.pronote_LASTNAME_FIRSTNAME` | basic informations about your child |
+| `[...]_timetable_today` | today's timetable |
+| `[...]_timetable_tomorrow` | tomorrow's timetable |
+| `[...]_timetable_next_day` | next school day timetable |
+| `[...]_timetable_period` | timetable for next 15 days |
+| `[...]_timetable_ical_url` | iCal URL for the timetable (if available) |
+| `[...]_grades` | latest grades |
+| `[...]_homework` | homework |
+| `[...]_homework_period` | homework for max 15 days |
+| `[...]_absences` | absences |
+| `[...]_evaluations` | evaluations |
+| `[...]_averages` | averages |
+| `[...]_punishments` | punishments |
+| `[...]_delays` | delays |
+| `[...]_information_and_surveys` | information_and_surveys |
+| `[...]_menus` | menus (if available) |
+
+The sensors are updated every 15 minutes.
+
+## Cards
+
+Cards are available here: https://github.com/delphiki/lovelace-pronote

@@ -3,18 +3,29 @@ from __future__ import annotations
 
 import logging
 from typing import Any
+import uuid
 
 import voluptuous as vol
+
+from datetime import time
 
 from homeassistant import config_entries
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.core import callback
 
 import pronotepy
+from .pronote_helper import *
 
 from pronotepy.ent import *
 
-from .const import DOMAIN
+from .const import (
+    DOMAIN,
+    DEFAULT_REFRESH_INTERVAL,
+    DEFAULT_ALARM_OFFSET,
+    DEFAULT_LUNCH_BREAK_TIME,
+)
+
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -28,75 +39,123 @@ def get_ent_list() -> dict[str]:
         ent.append(func)
     return ent
 
-
-STEP_USER_DATA_SCHEMA = vol.Schema(
+STEP_USER_CONNECTION_TYPE = vol.Schema(
     {
-        vol.Required("url"): str,
-        vol.Required("account_type"): vol.In({'eleve': 'Élève', 'parent': 'Parent'}),
-        vol.Required("username"): str,
-        vol.Required("password"): str,
-        vol.Optional("ent"): vol.In(get_ent_list()),
+        vol.Required("connection_type"): vol.In({'username_password': 'Username and password', 'qrcode': 'QRCode'}),
+        vol.Required("account_type"): vol.In({'eleve': 'Student', 'parent': 'Parent'})
     }
 )
 
+STEP_USER_DATA_SCHEMA_UP = vol.Schema(
+    {
+        vol.Required("url"): str,
+        vol.Required("username"): str,
+        vol.Required("password"): str,
+        vol.Optional("ent"): vol.In(get_ent_list()),
+        vol.Optional("device_name"): str,
+        vol.Optional("account_pin"): str
+    }
+)
 
-def auth_test(data) -> pronotepy.Client | pronotepy.ParentClient | None:
-    url = data['url'] + ('parent' if data['account_type'] ==
-                         'parent' else 'eleve') + '.html'
+STEP_USER_DATA_SCHEMA_QR = vol.Schema(
+    {
+        vol.Required("qr_code_json"): str,
+        vol.Required("qr_code_pin"): str,
+        vol.Optional("device_name"): str,
+        vol.Optional("account_pin"): str
+    }
+)
 
-    ent = None
-    if 'ent' in data:
-        ent = getattr(pronotepy.ent, data['ent'])
-
-    if not ent:
-        url += '?login=true'
-
-    try:
-        client = (pronotepy.ParentClient if data['account_type'] ==
-                  'parent' else pronotepy.Client)(url, data['username'], data['password'], ent)
-        _LOGGER.info(client.info.name)
-    except Exception as err:
-        _LOGGER.critical(err)
-        return None
-
-    return client
-
-
+@config_entries.HANDLERS.register(DOMAIN)
 class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Pronote."""
 
-    VERSION = 1
-    user_step_data = {}
+    VERSION = 2
     pronote_client = None
 
-    async def async_step_user(
-        self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
-        """Handle the initial step."""
+    def __init__(self) -> None:
+        self._user_inputs: dict = {}
+
+    async def async_step_user(self, user_input: dict | None = None) -> FlowResult:
+        """Handle a flow initialized by the user."""
+        _LOGGER.debug("Setup process initiated by user.")
+
+        if user_input is None:
+            _LOGGER.info("Selecting connection")
+
+            return self.async_show_form(
+                step_id="user", data_schema=STEP_USER_CONNECTION_TYPE
+            )
+        _LOGGER.info("Selected connection: %s", user_input)
+        self._user_inputs.update(user_input)
+
+        if user_input['connection_type'] == 'username_password':
+            return await self.async_step_username_password_login()
+        else:
+            return await self.async_step_qr_code_login()
+
+    async def async_step_username_password_login(self, user_input: dict | None = None) -> FlowResult:
+        """Handle the rest step."""
+        _LOGGER.info("async_step_up: Connecting via user/password")
         errors: dict[str, str] = {}
         if user_input is not None:
             try:
-                client = await self.hass.async_add_executor_job(auth_test, user_input)
+                _LOGGER.debug("User Input: %s", user_input)
+                user_input['account_type'] = self._user_inputs['account_type']
+                self._user_inputs.update(user_input)
+                client = await self.hass.async_add_executor_job(get_client_from_username_password, self._user_inputs)
 
                 if client is None:
                     raise InvalidAuth
-            except CannotConnect:
-                errors["base"] = "cannot_connect"
+            except pronotepy.exceptions.CryptoError:
+                errors["base"] = "invalid_auth"
             except InvalidAuth:
                 errors["base"] = "invalid_auth"
-            except Exception:  # pylint: disable=broad-except
-                _LOGGER.exception("Unexpected exception")
-                errors["base"] = "unknown"
             else:
                 if user_input['account_type'] == 'parent':
-                    self.user_step_data = user_input
+                    _LOGGER.debug("_User Inputs UP Parent: %s", self._user_inputs)
                     self.pronote_client = client
                     return await self.async_step_parent()
 
-                return self.async_create_entry(title=client.info.name, data=user_input)
+                _LOGGER.debug("_User Inputs UP: %s", self._user_inputs)
+                return self.async_create_entry(title=client.info.name, data=self._user_inputs)
+
 
         return self.async_show_form(
-            step_id="user", data_schema=STEP_USER_DATA_SCHEMA, errors=errors
+            step_id="username_password_login", data_schema=STEP_USER_DATA_SCHEMA_UP, errors=errors
+        )
+
+    async def async_step_qr_code_login(self, user_input: dict | None = None) -> FlowResult:
+        """Handle the rest step."""
+        _LOGGER.info("async_step_up: Connecting via qrcode")
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            try:
+                _LOGGER.debug("User Input: %s", self._user_inputs)
+                user_input['account_type'] = self._user_inputs['account_type']
+                user_input['qr_code_uuid'] = str(uuid.uuid4())
+
+                client = await self.hass.async_add_executor_job(get_client_from_qr_code, user_input)
+
+                if client is None:
+                    raise InvalidAuth
+            except InvalidAuth:
+                errors["base"] = "invalid_auth"
+            else:
+                self._user_inputs['qr_code_url'] = client.pronote_url
+                self._user_inputs['qr_code_username'] = client.username
+                self._user_inputs['qr_code_password'] = client.password
+                self._user_inputs['qr_code_uuid'] = client.uuid
+
+                if self._user_inputs['account_type'] == 'parent':
+                    self.pronote_client = client
+                    return await self.async_step_parent()
+
+                return self.async_create_entry(title=client.info.name, data=self._user_inputs)
+
+
+        return self.async_show_form(
+            step_id="qr_code_login", data_schema=STEP_USER_DATA_SCHEMA_QR, errors=errors
         )
 
     async def async_step_parent(
@@ -120,10 +179,17 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
             )
 
-        self.user_step_data['child'] = user_input['child']
+        self._user_inputs['child'] = user_input['child']
+        _LOGGER.debug("Parent Input UP: %s", self._user_inputs)
+        return self.async_create_entry(title=children[user_input['child']]+" (via compte parent)", data=self._user_inputs)
 
-        return self.async_create_entry(title=children[user_input['child']]+" (via compte parent)", data=self.user_step_data)
-
+    @staticmethod
+    @callback
+    def async_get_options_flow(
+        config_entry: config_entries.ConfigEntry,
+    ) -> config_entries.OptionsFlow:
+        """Create the options flow."""
+        return OptionsFlowHandler(config_entry)
 
 class CannotConnect(HomeAssistantError):
     """Error to indicate we cannot connect."""
@@ -131,3 +197,27 @@ class CannotConnect(HomeAssistantError):
 
 class InvalidAuth(HomeAssistantError):
     """Error to indicate there is invalid auth."""
+
+class OptionsFlowHandler(config_entries.OptionsFlow):
+    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
+        """Initialize options flow."""
+        self.config_entry = config_entry
+
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Manage the options."""
+        if user_input is not None:
+            return self.async_create_entry(title="", data=user_input)
+
+        return self.async_show_form(
+            step_id="init",
+            data_schema=vol.Schema(
+                {
+                    vol.Optional("nickname", default=self.config_entry.options.get("nickname")): vol.All(vol.Coerce(str), vol.Length(min=0)),
+                    vol.Optional("refresh_interval", default=self.config_entry.options.get("refresh_interval", DEFAULT_REFRESH_INTERVAL)): int,
+                    vol.Optional("lunch_break_time", default=self.config_entry.options.get("lunch_break_time", DEFAULT_LUNCH_BREAK_TIME)): str,
+                    vol.Optional("alarm_offset", default=self.config_entry.options.get("alarm_offset", DEFAULT_ALARM_OFFSET)): int,
+                }
+            ),
+        )

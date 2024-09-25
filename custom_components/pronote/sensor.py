@@ -2,26 +2,26 @@ from homeassistant.core import HomeAssistant
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
-
-from homeassistant.components.sensor import SensorEntity
+from homeassistant.components.sensor import (
+    SensorDeviceClass,
+    SensorEntity,
+)
 
 from homeassistant.helpers.update_coordinator import (
     CoordinatorEntity,
 )
 
-import re
-
 from datetime import datetime
 
 from .coordinator import PronoteDataUpdateCoordinator
+from .pronote_formatter import *
 
 from .const import (
     DOMAIN,
     GRADES_TO_DISPLAY,
-    HOMEWORK_DESC_MAX_LENGTH,
-    EVALUATIONS_TO_DISPLAY
+    EVALUATIONS_TO_DISPLAY,
+    DEFAULT_LUNCH_BREAK_TIME
 )
-
 
 async def async_setup_entry(
     hass: HomeAssistant,
@@ -31,8 +31,6 @@ async def async_setup_entry(
     coordinator: PronoteDataUpdateCoordinator = hass.data[DOMAIN][
         config_entry.entry_id
     ]["coordinator"]
-
-    await coordinator.async_config_entry_first_refresh()
 
     sensors = [
         PronoteChildSensor(coordinator),
@@ -52,62 +50,15 @@ async def async_setup_entry(
         PronoteAveragesSensor(coordinator),
         PronotePunishmentsSensor(coordinator),
         PronoteDelaysSensor(coordinator),
+        PronoteInformationAndSurveysSensor(coordinator),
 
         PronoteGenericSensor(coordinator, 'ical_url', 'timetable_ical_url'),
+        PronoteGenericSensor(coordinator, 'next_alarm', 'next_alarm', None, SensorDeviceClass.TIMESTAMP),
 
         PronoteMenusSensor(coordinator),
     ]
 
     async_add_entities(sensors, False)
-
-
-class PronoteGenericSensor(CoordinatorEntity, SensorEntity):
-    """Representation of a Pronote sensor."""
-
-    def __init__(self, coordinator, coordinator_key: str, name: str, state: str = None) -> None:
-        """Initialize the Pronote sensor."""
-        super().__init__(coordinator)
-        self._coordinator_key = coordinator_key
-        self._name = name
-        self._state = state
-        self._attr_unique_id = f"pronote-{self.coordinator.data['sensor_prefix']}-{self._name}"
-        self._attr_device_info = DeviceInfo(
-            name=f"Pronote - {self.coordinator.data['child_info'].name}",
-            entry_type=DeviceEntryType.SERVICE,
-            identifiers={
-                (DOMAIN, f"Pronote - {self.coordinator.data['child_info'].name}")
-            },
-            manufacturer="Pronote",
-            model=self.coordinator.data['child_info'].name,
-        )
-
-    @property
-    def name(self):
-        """Return the name of the sensor."""
-        return f"{DOMAIN}_{self.coordinator.data['sensor_prefix']}_{self._name}"
-
-    @property
-    def native_value(self):
-        """Return the state of the sensor."""
-        if self.coordinator.data[self._coordinator_key] is None:
-            return 'unavailable'
-        elif self._state == 'len':
-            return len(self.coordinator.data[self._coordinator_key])
-        else:
-            return self._state
-
-    @property
-    def extra_state_attributes(self):
-        """Return the state attributes."""
-        return {
-            'updated_at': datetime.now()
-        }
-
-    @property
-    def available(self) -> bool:
-        """Return if entity is available."""
-        return self.coordinator.last_update_success and self.coordinator.data[self._coordinator_key]
-
 
 class PronoteChildSensor(CoordinatorEntity, SensorEntity):
     """Representation of a Pronote sensor."""
@@ -143,35 +94,63 @@ class PronoteChildSensor(CoordinatorEntity, SensorEntity):
         """Return the state attributes."""
         return {
             "full_name": self._child_info.name,
+            "nickname": self.coordinator.config_entry.options.get('nickname'),
             "class_name": self._child_info.class_name,
             "establishment": self._child_info.establishment,
             "via_parent_account": self._account_type == 'parent',
-            "updated_at": datetime.now()
+            "updated_at": self.coordinator.last_update_success_time
         }
 
+class PronoteGenericSensor(CoordinatorEntity, SensorEntity):
+    """Representation of a Pronote sensor."""
 
-def cours_affiche_from_lesson(lesson_data):
-    if lesson_data.detention is True:
-        return 'RETENUE'
-    if lesson_data.subject:
-        return lesson_data.subject.name
-    return 'autre'
+    def __init__(self, coordinator, coordinator_key: str, name: str, state: str = None, device_class: str = None) -> None:
+        """Initialize the Pronote sensor."""
+        super().__init__(coordinator)
+        self._coordinator_key = coordinator_key
+        self._name = name
+        self._state = state
+        self._attr_unique_id = f"pronote-{self.coordinator.data['sensor_prefix']}-{self._name}"
+        self._attr_device_info = DeviceInfo(
+            name=f"Pronote - {self.coordinator.data['child_info'].name}",
+            entry_type=DeviceEntryType.SERVICE,
+            identifiers={
+                (DOMAIN, f"Pronote - {self.coordinator.data['child_info'].name}")
+            },
+            manufacturer="Pronote",
+            model=self.coordinator.data['child_info'].name,
+        )
+        if (device_class is not None):
+            self._attr_device_class = device_class
 
+    @property
+    def name(self):
+        """Return the name of the sensor."""
+        return f"{DOMAIN}_{self.coordinator.data['sensor_prefix']}_{self._name}"
 
-def build_cours_data(lesson_data):
-    return {
-        'id': lesson_data.id,
-        'start_at': lesson_data.start,
-        'end_at': lesson_data.end,
-        'start_time': lesson_data.start.strftime("%H:%M"),
-        'end_time': lesson_data.end.strftime("%H:%M"),
-        'lesson': cours_affiche_from_lesson(lesson_data),
-        'classroom': lesson_data.classroom,
-        'canceled': lesson_data.canceled,
-        'status': lesson_data.status,
-        'background_color': lesson_data.background_color,
-    }
+    @property
+    def native_value(self):
+        """Return the state of the sensor."""
+        if self.coordinator.data[self._coordinator_key] is None:
+            return 'unavailable'
+        elif self._state == 'len':
+            return len(self.coordinator.data[self._coordinator_key])
+        elif self._state is not None:
+            return self._state
+        else:
+            return self.coordinator.data[self._coordinator_key]
 
+    @property
+    def extra_state_attributes(self):
+        """Return the state attributes."""
+        return {
+            'updated_at': self.coordinator.last_update_success_time
+        }
+
+    @property
+    def available(self) -> bool:
+        """Return if entity is available."""
+        return self.coordinator.last_update_success and self.coordinator.data[self._coordinator_key] is not None
 
 class PronoteTimetableSensor(PronoteGenericSensor):
     """Representation of a Pronote sensor."""
@@ -180,7 +159,11 @@ class PronoteTimetableSensor(PronoteGenericSensor):
         """Initialize the Pronote sensor."""
         super().__init__(coordinator, 'lessons_'+suffix, 'timetable_'+suffix, 'len')
         self._suffix = suffix
+        self._lessons = []
         self._start_at = None
+        self._end_at = None
+        self._lunch_break_start_at = None
+        self._lunch_break_end_at = None
 
     @property
     def extra_state_attributes(self):
@@ -188,29 +171,47 @@ class PronoteTimetableSensor(PronoteGenericSensor):
         self._lessons = self.coordinator.data['lessons_'+self._suffix]
         attributes = []
         canceled_counter = None
+        single_day = self._suffix in ['today', 'tomorrow', 'next_day']
+        lunch_break_time = datetime.strptime(
+            self.coordinator.config_entry.options.get('lunch_break_time', DEFAULT_LUNCH_BREAK_TIME),
+            '%H:%M'
+        ).time()
+
         if self._lessons is not None:
+            self._start_at = None
+            self._end_at = None
+            self._lunch_break_start_at = None
+            self._lunch_break_end_at = None
             canceled_counter = 0
             for lesson in self._lessons:
                 index = self._lessons.index(lesson)
                 if not (lesson.start == self._lessons[index - 1].start and lesson.canceled is True):
-                    attributes.append(build_cours_data(lesson))
+                    attributes.append(format_lesson(lesson, lunch_break_time))
                 if lesson.canceled is False and self._start_at is None:
                     self._start_at = lesson.start
                 if lesson.canceled is True:
                     canceled_counter += 1
+                if single_day is True and lesson.canceled is False:
+                    self._end_at = lesson.end
+                    if lesson.end.time() < lunch_break_time:
+                        self._lunch_break_start_at = lesson.end
+                    if self._lunch_break_end_at is None and lesson.start.time() >= lunch_break_time:
+                        self._lunch_break_end_at = lesson.start
+            self._lessons = []
 
-        return {
-            'updated_at': datetime.now(),
+        result = {
+            'updated_at': self.coordinator.last_update_success_time,
             'lessons': attributes,
+            'canceled_lessons_counter': canceled_counter,
             'day_start_at': self._start_at,
-            'canceled_lessons_counter': canceled_counter
+            'day_end_at': self._end_at,
         }
 
+        if single_day is True:
+            result['lunch_break_start_at'] = self._lunch_break_start_at
+            result['lunch_break_end_at'] = self._lunch_break_end_at
 
-def check_attr(value, output):
-    if value is not None:
-        return output
-    return None
+        return result
 
 class PronoteGradesSensor(PronoteGenericSensor):
     """Representation of a Pronote sensor."""
@@ -229,26 +230,10 @@ class PronoteGradesSensor(PronoteGenericSensor):
                 index_note += 1
                 if index_note == GRADES_TO_DISPLAY:
                     break
-                attributes.append({
-                    'id': grade.id,
-                    'date': grade.date,
-                    'subject': grade.subject.name,
-                    'comment': grade.comment,
-                    'grade': grade.grade,
-                    'out_of': check_attr(grade.out_of, float(re.sub(',', '.', grade.out_of))),
-                    'default_out_of': check_attr(grade.default_out_of, float(re.sub(',', '.', grade.default_out_of))),
-                    'grade_out_of': check_attr(grade.out_of, grade.grade + '/' + grade.out_of),
-                    'coefficient': check_attr(grade.coefficient, float(re.sub(',', '.', grade.coefficient))),
-                    'class_average': check_attr(grade.average, float(re.sub(',', '.', grade.average))),
-                    'max': check_attr(grade.max, float(re.sub(',', '.', grade.max))),
-                    'min': check_attr(grade.min, float(re.sub(',', '.', grade.min))),
-                    'is_bonus': grade.is_bonus,
-                    'is_optionnal': grade.is_optionnal,
-                    'is_out_of_20': grade.is_out_of_20,
-                })
+                attributes.append(format_grade(grade))
 
         return {
-            'updated_at': datetime.now(),
+            'updated_at': self.coordinator.last_update_success_time,
             'grades': attributes
         }
 
@@ -269,19 +254,12 @@ class PronoteHomeworkSensor(PronoteGenericSensor):
         if self.coordinator.data[f"homework{self._suffix}"] is not None:
             todo_counter = 0
             for homework in self.coordinator.data[f"homework{self._suffix}"]:
-                attributes.append({
-                    'index': self.coordinator.data[f"homework{self._suffix}"].index(homework),
-                    'date': homework.date,
-                    'subject': homework.subject.name,
-                    'short_description': (homework.description)[0:HOMEWORK_DESC_MAX_LENGTH],
-                    'description': (homework.description),
-                    'done': homework.done,
-                })
+                attributes.append(format_homework(homework))
                 if homework.done is False:
                     todo_counter += 1
 
         return {
-            'updated_at': datetime.now(),
+            'updated_at': self.coordinator.last_update_success_time,
             'homework': attributes,
             'todo_counter': todo_counter
         }
@@ -300,18 +278,10 @@ class PronoteAbsensesSensor(PronoteGenericSensor):
         attributes = []
         if self.coordinator.data['absences'] is not None:
             for absence in self.coordinator.data['absences']:
-                attributes.append({
-                    'id': absence.id,
-                    'from': absence.from_date,
-                    'to': absence.to_date,
-                    'justified': absence.justified,
-                    'hours': absence.hours,
-                    'days': absence.days,
-                    'reason': str(absence.reasons)[2:-2],
-                })
+                attributes.append(format_absence(absence))
 
         return {
-            'updated_at': datetime.now(),
+            'updated_at': self.coordinator.last_update_success_time,
             'absences': attributes
         }
 
@@ -329,17 +299,10 @@ class PronoteDelaysSensor(PronoteGenericSensor):
         attributes = []
         if self.coordinator.data['delays'] is not None:
             for delay in self.coordinator.data['delays']:
-                attributes.append({
-                    'id': delay.id,
-                    'date': delay.date,
-                    'minutes': delay.minutes,
-                    'justified': delay.justified,
-                    'justification': delay.justification,
-                    'reasons': str(delay.reasons)[2:-2],
-                })
+                attributes.append(format_delay(delay))
 
         return {
-            'updated_at': datetime.now(),
+            'updated_at': self.coordinator.last_update_success_time,
             'delays': attributes
         }
 
@@ -361,27 +324,10 @@ class PronoteEvaluationsSensor(PronoteGenericSensor):
                 index_note += 1
                 if index_note == EVALUATIONS_TO_DISPLAY:
                     break
-                attributes.append({
-                    'date': evaluation.date,
-                    'subject': evaluation.subject.name,
-                    'description': evaluation.description,
-                    'coefficient': evaluation.coefficient,
-                    'paliers': evaluation.paliers,
-                    'teacher': evaluation.teacher,
-                    'acquisitions': [
-                        {
-                            'order': acquisition.order,
-                            'name': acquisition.name,
-                            'abbreviation': acquisition.abbreviation,
-                            'level': acquisition.level,
-                            'domain': acquisition.domain,
-                        }
-                        for acquisition in evaluation.acquisitions
-                    ]
-                })
+                attributes.append(format_evaluation(evaluation))
 
         return {
-            'updated_at': datetime.now(),
+            'updated_at': self.coordinator.last_update_success_time,
             'evaluations': attributes
         }
 
@@ -399,16 +345,9 @@ class PronoteAveragesSensor(PronoteGenericSensor):
         attributes = []
         if self.coordinator.data['averages'] is not None:
             for average in self.coordinator.data['averages']:
-                attributes.append({
-                    'average': average.student,
-                    'class': average.class_average,
-                    'max': average.max,
-                    'min': average.min,
-                    'out_of': average.out_of,
-                    'subject': average.subject.name,
-                })
+                attributes.append(format_average(average))
         return {
-            'updated_at': datetime.now(),
+            'updated_at': self.coordinator.last_update_success_time,
             'averages': attributes
         }
 
@@ -426,43 +365,11 @@ class PronotePunishmentsSensor(PronoteGenericSensor):
         attributes = []
         if self.coordinator.data['punishments'] is not None:
             for punishment in self.coordinator.data['punishments']:
-                attributes.append({
-                    'id': punishment.id,
-                    'date': punishment.given.strftime("%Y-%m-%d"),
-                    'subject': punishment.during_lesson,
-                    'reasons': punishment.reasons,
-                    'circumstances': punishment.circumstances,
-                    'nature': punishment.nature,
-                    'duration': str(punishment.duration),
-                    'homework': punishment.homework,
-                    'exclusion': punishment.exclusion,
-                })
+                attributes.append(format_punishment(punishment))
         return {
-            'updated_at': datetime.now(),
+            'updated_at': self.coordinator.last_update_success_time,
             'punishments': attributes
         }
-
-
-def format_food_list(food_list):
-    formatted_food_list = []
-    if food_list is None:
-        return formatted_food_list
-
-    for food in food_list:
-        formatted_food_labels = []
-        for label in food.labels:
-            formatted_food_labels.append({
-                'id': label.id,
-                'name': label.name,
-                'color': label.color,
-            })
-        formatted_food_list.append({
-            'id': food.id,
-            'name': food.name,
-            'labels': formatted_food_labels,
-        })
-
-    return formatted_food_list
 
 
 class PronoteMenusSensor(PronoteGenericSensor):
@@ -478,20 +385,33 @@ class PronoteMenusSensor(PronoteGenericSensor):
         attributes = []
         if self.coordinator.data['menus'] is not None:
             for menu in self.coordinator.data['menus']:
-                attributes.append({
-                    'id': menu.id,
-                    'name': menu.name,
-                    'date': menu.date.strftime("%Y-%m-%d"),
-                    'is_lunch': menu.is_lunch,
-                    'is_dinner': menu.is_dinner,
-                    'first_meal': format_food_list(menu.first_meal),
-                    'main_meal': format_food_list(menu.main_meal),
-                    'side_meal': format_food_list(menu.side_meal),
-                    'other_meal': format_food_list(menu.other_meal),
-                    'cheese': format_food_list(menu.cheese),
-                    'dessert': format_food_list(menu.dessert),
-                })
+                attributes.append(format_menu(menu))
         return {
-            'updated_at': datetime.now(),
+            'updated_at': self.coordinator.last_update_success_time,
             'menus': attributes
+        }
+
+
+class PronoteInformationAndSurveysSensor(PronoteGenericSensor):
+    """Representation of a Pronote sensor."""
+
+    def __init__(self, coordinator) -> None:
+        """Initialize the Pronote sensor."""
+        super().__init__(coordinator, 'information_and_surveys', 'information_and_surveys', 'len')
+
+    @property
+    def extra_state_attributes(self):
+        """Return the state attributes."""
+        attributes = []
+        unread_count = None
+        if not self.coordinator.data['information_and_surveys'] is None:
+            unread_count = 0
+            for information_and_survey in self.coordinator.data['information_and_surveys']:
+                attributes.append(format_information_and_survey(information_and_survey))
+                if information_and_survey.read is False:
+                    unread_count += 1
+        return {
+            'updated_at': self.coordinator.last_update_success_time,
+            'unread_count': unread_count,
+            'information_and_surveys': attributes
         }
